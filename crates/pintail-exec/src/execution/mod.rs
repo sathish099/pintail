@@ -6979,7 +6979,7 @@ fn build_operator_inner(
             input,
             group_by,
             aggregates,
-        } => build_aggregate_operator(*input, group_by, aggregates, provider, memory, collation),
+        } => build_aggregate_operator(*input, &group_by, aggregates, provider, memory, collation),
         PhysicalPlan::Project { input, expressions } => {
             let dependent = expressions
                 .iter()
@@ -7293,7 +7293,7 @@ fn build_operator_inner(
 #[allow(clippy::too_many_lines)]
 fn build_aggregate_operator(
     input: PhysicalPlan,
-    group_by: Vec<BoundExpr>,
+    group_by: &[BoundExpr],
     mut aggregates: Vec<BoundAggregate>,
     provider: &dyn ScanProvider,
     memory: &MemoryTracker,
@@ -7302,7 +7302,7 @@ fn build_aggregate_operator(
     // Counts over a join on an inequality are taken from how many
     // rows each left row pairs with; the join is not run.
     let (input, columns) =
-        match counted_join::plan(&input, &group_by, &aggregates, provider, memory, collation)? {
+        match counted_join::plan(&input, group_by, &aggregates, provider, memory, collation)? {
             Some(counted) => {
                 aggregates = counted.aggregates;
                 (counted.input, counted.columns)
@@ -7389,7 +7389,7 @@ fn build_aggregate_operator(
     // by its own rules. The uniform collation, when the keys share
     // one, keeps the specialized single-table paths eligible; mixed
     // keys take the general per-key path.
-    let (key_collations, uniform_key_collation) = grouping_key_collations(&group_by, collation);
+    let (key_collations, uniform_key_collation) = grouping_key_collations(group_by, collation);
     let group_collation = uniform_key_collation.unwrap_or(collation);
     let group_by = group_by
         .iter()
