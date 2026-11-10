@@ -34,6 +34,8 @@ jobs:
           PINTAIL_DASHBOARD_PREBUILT: "1"
       - name: Diagnose fanout stack overflow
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gdb
           cargo test -p pintail-exec --test integration --locked --no-run --message-format=json > /tmp/test-build.json
           binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "integration" and .executable != null) | .executable' /tmp/test-build.json | tail -1)
           gdb --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt 60' --args "$binary" --exact fanout_join_aggregates::folded_branch_matches_the_join_as_written --nocapture
