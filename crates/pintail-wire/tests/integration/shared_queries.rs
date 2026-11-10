@@ -47,13 +47,13 @@ fn run(fixture: &Fixture, sql: &str) -> QueryOutput {
         .unwrap_or_else(|error| panic!("{sql}: {error}"))
 }
 
-fn seed(fixture: &Fixture) {
+fn seed(fixture: &Fixture, rows: u64) {
     run(
         fixture,
         "CREATE TABLE orders (id BIGINT UNSIGNED NOT NULL, region VARCHAR(16) NOT NULL, \
          total BIGINT NOT NULL, PRIMARY KEY (id))",
     );
-    let rows = (1..=200_u64)
+    let rows = (1..=rows)
         .map(|id| {
             let region =
                 ["north", "south", "east", "west"][usize::try_from(id % 4).expect("small")];
@@ -98,7 +98,8 @@ fn a_burst_shares_one_execution_and_only_when_the_answer_cannot_move() {
 
 fn identical_reads_answer_every_client_the_same_rows() {
     let fixture = fixture();
-    seed(&fixture);
+    // Keep the leader busy long enough for peers to join on small CI runners.
+    seed(&fixture, 20_000);
     let sql = "SELECT region, COUNT(*) AS orders, SUM(total) AS revenue FROM orders \
                GROUP BY region ORDER BY region";
 
@@ -128,7 +129,7 @@ fn identical_reads_answer_every_client_the_same_rows() {
 
 fn a_write_between_two_bursts_is_never_answered_from_before_it() {
     let fixture = fixture();
-    seed(&fixture);
+    seed(&fixture, 200);
     let sql = "SELECT COUNT(*) AS orders FROM orders";
 
     let first = burst(&fixture, sql);
@@ -151,7 +152,7 @@ fn a_write_between_two_bursts_is_never_answered_from_before_it() {
 
 fn a_statement_that_reads_the_clock_is_never_shared() {
     let fixture = fixture();
-    seed(&fixture);
+    seed(&fixture, 200);
 
     let before = shared_query_stats();
     let answers = burst(

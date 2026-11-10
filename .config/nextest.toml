@@ -13,7 +13,7 @@ measurements = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = '''
-test(/^(multi_core|subquery_scaling|text_grouping_scale|window_frame_scaling|settled_memo_scale|activity_scale|morsel_bench|range_prune_bench|dependent_subquery_ratio|join_key_value_cost|scalar_fallback_cost|computed_aggregate_arguments|correlated_self_join|grouped_fold|segment_subcube|mask_cost|merge_output|ranged_overlay|supersession_bitmap|layout|shared_query_burst)::/)
+test(/^(multi_core|subquery_scaling|text_grouping_scale|window_frame_scaling|settled_memo_scale|activity_scale|morsel_bench|range_prune_bench|dependent_subquery_ratio|join_key_value_cost|scalar_fallback_cost|computed_aggregate_arguments|correlated_self_join|grouped_fold|segment_subcube|mask_cost|merge_output|ranged_overlay|supersession_bitmap|layout|shared_queries|shared_query_burst)::/)
 | (binary(wire_compat) & test(a_saturated_server_refuses_queries_instead_of_queueing_them))
 '''
 test-group = "measurements"
