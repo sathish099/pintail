@@ -6978,132 +6978,8 @@ fn build_operator_inner(
         PhysicalPlan::HashAggregate {
             input,
             group_by,
-            mut aggregates,
-        } => {
-            // Counts over a join on an inequality are taken from how many
-            // rows each left row pairs with; the join is not run.
-            let (input, columns) = match counted_join::plan(
-                &input,
-                &group_by,
-                &aggregates,
-                provider,
-                memory,
-                collation,
-            )? {
-                Some(counted) => {
-                    aggregates = counted.aggregates;
-                    (counted.input, counted.columns)
-                }
-                None => build_operator(*input, provider, memory, collation)?,
-            };
-            let (input, columns) = precompute_dependent_aggregate_arguments(
-                input,
-                columns,
-                &mut aggregates,
-                provider,
-                memory,
-                collation,
-            )?;
-            let column_types = group_by
-                .iter()
-                .map(|expression| expression.data_type.unwrap_or(DataType::Utf8))
-                .chain(
-                    aggregates
-                        .iter()
-                        .map(|aggregate| aggregate.data_type.unwrap_or(DataType::Utf8)),
-                )
-                .collect();
-            // The aggregate's output schema is positional (group keys, then
-            // aggregate results). Downstream operators that sit between the
-            // aggregate and the final projection — the window operator — need
-            // real column entries so their own type layout and appended
-            // outputs line up; synthetic identities keep Column resolution
-            // unambiguous, matching the window-output convention.
-            let synthetic = |index: usize,
-                             data_type: Option<DataType>,
-                             nullable: bool,
-                             binary_width: Option<u32>| BoundColumn {
-                database_id: DatabaseId::new(u64::MAX),
-                table_id: TableId::new(u64::MAX - 1),
-                column_id: u32::try_from(index).unwrap_or(u32::MAX),
-                relation_name: "<aggregate>".to_owned(),
-                name: format!("<aggregate-{index}>"),
-                data_type: data_type.unwrap_or(DataType::Utf8),
-                nullable,
-                collation: None,
-                enum_labels: None,
-                geometry: false,
-                timestamp: false,
-                binary_width,
-                bit_width: None,
-                float_decimals: None,
-                outer: false,
-                using_shadowed: false,
-                declared_set: false,
-            };
-            let mut output_columns = group_by
-                .iter()
-                .enumerate()
-                .map(|(index, expression)| match &expression.kind {
-                    BoundExprKind::Column(column) => {
-                        let mut column = column.clone();
-                        column.outer = false;
-                        column.nullable = expression.nullable;
-                        column
-                    }
-                    _ => synthetic(
-                        index,
-                        expression.data_type,
-                        expression.nullable,
-                        expression.binary_width(),
-                    ),
-                })
-                .collect::<Vec<_>>();
-            output_columns.extend(aggregates.iter().enumerate().map(|(offset, aggregate)| {
-                if let Some(column) = &aggregate.output_column {
-                    return column.as_ref().clone();
-                }
-                synthetic(
-                    group_by.len().saturating_add(offset),
-                    aggregate.data_type,
-                    aggregate.nullable,
-                    aggregate.expr.as_ref().and_then(BoundExpr::binary_width),
-                )
-            }));
-            // Each grouping key folds under ITS OWN collation - grouping
-            // never compares one key column against another, so keys of two
-            // collations are answerable, exactly as a sort orders each key
-            // by its own rules. The uniform collation, when the keys share
-            // one, keeps the specialized single-table paths eligible; mixed
-            // keys take the general per-key path.
-            let (key_collations, uniform_key_collation) =
-                grouping_key_collations(&group_by, collation);
-            let group_collation = uniform_key_collation.unwrap_or(collation);
-            let group_by = group_by
-                .iter()
-                .zip(&key_collations)
-                .map(|(expression, key_collation)| {
-                    CompiledExpr::compile(expression, &columns, *key_collation)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let aggregates = aggregates
-                .iter()
-                .map(|aggregate| CompiledAggregate::compile(aggregate, &columns, collation))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((
-                PullOperator::HashAggregate {
-                    input: Box::new(input),
-                    input_width: columns.len(),
-                    group_by,
-                    aggregates,
-                    column_types,
-                    state: None,
-                    collation: group_collation,
-                    key_collations,
-                },
-                output_columns,
-            ))
-        }
+            aggregates,
+        } => build_aggregate_operator(*input, group_by, aggregates, provider, memory, collation),
         PhysicalPlan::Project { input, expressions } => {
             let dependent = expressions
                 .iter()
@@ -7410,6 +7286,141 @@ fn build_operator_inner(
             ))
         }
     }
+}
+
+// Keep aggregate temporaries out of every recursive operator-build frame.
+#[inline(never)]
+#[allow(clippy::too_many_lines)]
+fn build_aggregate_operator(
+    input: PhysicalPlan,
+    group_by: Vec<BoundExpr>,
+    mut aggregates: Vec<BoundAggregate>,
+    provider: &dyn ScanProvider,
+    memory: &MemoryTracker,
+    collation: Collation,
+) -> Result<(PullOperator, Vec<BoundColumn>), ExecError> {
+    // Counts over a join on an inequality are taken from how many
+    // rows each left row pairs with; the join is not run.
+    let (input, columns) = match counted_join::plan(
+        &input,
+        &group_by,
+        &aggregates,
+        provider,
+        memory,
+        collation,
+    )? {
+        Some(counted) => {
+            aggregates = counted.aggregates;
+            (counted.input, counted.columns)
+        }
+        None => build_operator(input, provider, memory, collation)?,
+    };
+    let (input, columns) = precompute_dependent_aggregate_arguments(
+        input,
+        columns,
+        &mut aggregates,
+        provider,
+        memory,
+        collation,
+    )?;
+    let column_types = group_by
+        .iter()
+        .map(|expression| expression.data_type.unwrap_or(DataType::Utf8))
+        .chain(
+            aggregates
+                .iter()
+                .map(|aggregate| aggregate.data_type.unwrap_or(DataType::Utf8)),
+        )
+        .collect();
+    // The aggregate's output schema is positional (group keys, then
+    // aggregate results). Downstream operators that sit between the
+    // aggregate and the final projection — the window operator — need
+    // real column entries so their own type layout and appended
+    // outputs line up; synthetic identities keep Column resolution
+    // unambiguous, matching the window-output convention.
+    let synthetic = |index: usize,
+                     data_type: Option<DataType>,
+                     nullable: bool,
+                     binary_width: Option<u32>| BoundColumn {
+        database_id: DatabaseId::new(u64::MAX),
+        table_id: TableId::new(u64::MAX - 1),
+        column_id: u32::try_from(index).unwrap_or(u32::MAX),
+        relation_name: "<aggregate>".to_owned(),
+        name: format!("<aggregate-{index}>"),
+        data_type: data_type.unwrap_or(DataType::Utf8),
+        nullable,
+        collation: None,
+        enum_labels: None,
+        geometry: false,
+        timestamp: false,
+        binary_width,
+        bit_width: None,
+        float_decimals: None,
+        outer: false,
+        using_shadowed: false,
+        declared_set: false,
+    };
+    let mut output_columns = group_by
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| match &expression.kind {
+            BoundExprKind::Column(column) => {
+                let mut column = column.clone();
+                column.outer = false;
+                column.nullable = expression.nullable;
+                column
+            }
+            _ => synthetic(
+                index,
+                expression.data_type,
+                expression.nullable,
+                expression.binary_width(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    output_columns.extend(aggregates.iter().enumerate().map(|(offset, aggregate)| {
+        if let Some(column) = &aggregate.output_column {
+            return column.as_ref().clone();
+        }
+        synthetic(
+            group_by.len().saturating_add(offset),
+            aggregate.data_type,
+            aggregate.nullable,
+            aggregate.expr.as_ref().and_then(BoundExpr::binary_width),
+        )
+    }));
+    // Each grouping key folds under ITS OWN collation - grouping
+    // never compares one key column against another, so keys of two
+    // collations are answerable, exactly as a sort orders each key
+    // by its own rules. The uniform collation, when the keys share
+    // one, keeps the specialized single-table paths eligible; mixed
+    // keys take the general per-key path.
+    let (key_collations, uniform_key_collation) = grouping_key_collations(&group_by, collation);
+    let group_collation = uniform_key_collation.unwrap_or(collation);
+    let group_by = group_by
+        .iter()
+        .zip(&key_collations)
+        .map(|(expression, key_collation)| {
+            CompiledExpr::compile(expression, &columns, *key_collation)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let aggregates = aggregates
+        .iter()
+        .map(|aggregate| CompiledAggregate::compile(aggregate, &columns, collation))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((
+        PullOperator::HashAggregate {
+            input: Box::new(input),
+            input_width: columns.len(),
+            group_by,
+            aggregates,
+            column_types,
+            state: None,
+            collation: group_collation,
+            key_collations,
+        },
+        output_columns,
+    ))
 }
 
 fn validate_union_fields(layouts: &[Vec<OutputField>]) -> Result<(), ExecError> {
