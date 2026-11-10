@@ -9,8 +9,6 @@
 name: Compat
 
 on:
-  schedule:
-    - cron: '45 4 * * *'
   workflow_dispatch:
 
 permissions:
