@@ -7301,20 +7301,14 @@ fn build_aggregate_operator(
 ) -> Result<(PullOperator, Vec<BoundColumn>), ExecError> {
     // Counts over a join on an inequality are taken from how many
     // rows each left row pairs with; the join is not run.
-    let (input, columns) = match counted_join::plan(
-        &input,
-        &group_by,
-        &aggregates,
-        provider,
-        memory,
-        collation,
-    )? {
-        Some(counted) => {
-            aggregates = counted.aggregates;
-            (counted.input, counted.columns)
-        }
-        None => build_operator(input, provider, memory, collation)?,
-    };
+    let (input, columns) =
+        match counted_join::plan(&input, &group_by, &aggregates, provider, memory, collation)? {
+            Some(counted) => {
+                aggregates = counted.aggregates;
+                (counted.input, counted.columns)
+            }
+            None => build_operator(input, provider, memory, collation)?,
+        };
     let (input, columns) = precompute_dependent_aggregate_arguments(
         input,
         columns,
