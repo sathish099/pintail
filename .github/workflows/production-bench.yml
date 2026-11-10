@@ -11,8 +11,6 @@ on:
   push:
     branches: [dev, main]
     tags: ['v*']
-  schedule:
-    - cron: '0 2 * * *' # nightly: mixed CDC + restart phases
   workflow_dispatch:
     inputs:
       profile:
